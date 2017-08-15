@@ -1,0 +1,3 @@
+- Make the tile render do nothing (optionally) to start with, and then add a "refresh" option.
+
+- In DroppedPins add option to aggregate nearby pins.

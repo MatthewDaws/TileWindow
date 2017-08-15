@@ -8,6 +8,8 @@ from . import tiler, image
 import PIL.Image as _Image
 import PIL.ImageDraw as _ImageDraw
 import math as _math
+import numpy as _np
+import threading as _threading
 
 class MapImage(tiler.TileImage):
     """A `tkinter` widget which displays a draggable map.
@@ -26,15 +28,18 @@ class MapImage(tiler.TileImage):
       one of the :class:`OrdnanceSurveyTiles` subclasses.
     """
     def __init__(self, parent, source):
-        self._provider = source
+        self._source = source
         map_mouse_handler = None
-        super().__init__(parent, self._provider, self._provider.tile_size)
+        self._composer = self._Composer(source, self)
+        super().__init__(parent, self._composer, source.tile_size)
         self.mouse_handler = None
-        self.tiler.image_bounds = self._provider.bbox
+        self.tiler.image_bounds = source.bbox
 
     @property
     def map_mouse_handler(self):
-        """The current instance of :class:`MapMouseHandler` or `None`."""
+        """The current instance of :class:`MapMouseHandler` or `None`.
+        Use this to receive simple notifications of the current mouse position.
+        """
         return self._map_mouse_handler
 
     @map_mouse_handler.setter
@@ -43,6 +48,8 @@ class MapImage(tiler.TileImage):
 
     @property
     def mouse_handler(self):
+        """The current mouse handler, satisfying the same interface as
+        that for :class:`tiler.TileImage`."""
         return super().mouse_handler.delegate
 
     @mouse_handler.setter
@@ -50,9 +57,9 @@ class MapImage(tiler.TileImage):
         tiler.TileImage.mouse_handler.fset(self, self._MapImageMouseHandler(self, v))
 
     def move_map_view_to(self, longitude, latitude):
-        """Move to view so that this location is in the upper left of the
+        """Move the view so that this location is in the upper left of the
         window."""
-        xx, yy = self._provider.lon_lat_to_tile_space(longitude, latitude)
+        xx, yy = self._source.lon_lat_to_tile_space(longitude, latitude)
         self.move_tile_view_to(xx, yy)
 
     def move_map_view_to_centre(self, longitude, latitude):
@@ -60,7 +67,7 @@ class MapImage(tiler.TileImage):
         of the window, which requires this widget to fully displayed by
         `tkinter` (i.e. calling this immediately after creating the widget is
         likely not to work.)"""
-        xx, yy = self._provider.lon_lat_to_tile_space(longitude, latitude)
+        xx, yy = self._source.lon_lat_to_tile_space(longitude, latitude)
         xs, ys = self.size
         self.move_tile_view_to(xx - xs//2, yy - ys//2)
 
@@ -71,8 +78,13 @@ class MapImage(tiler.TileImage):
         :return: `(longitude_min, latitude_min, longitude_max, latitude_max)`
         """
         xmin, ymin, xmax, ymax = self.tile_window
-        return (*self._provider.tile_space_to_lon_lat(xmin, ymin),
-            *self._provider.tile_space_to_lon_lat(xmax, ymax))
+        return (*self._source.tile_space_to_lon_lat(xmin, ymin),
+            *self._source.tile_space_to_lon_lat(xmax, ymax))
+
+    def set_composer(self, composer):
+        """Set the :class:`Composer` instance.  Pass `None` to turn off
+        composing."""
+        self._composer.composer = composer
 
     class _MapImageMouseHandler(image.MouseHandlerChain):
         def __init__(self, parent, delegate=None):
@@ -82,9 +94,33 @@ class MapImage(tiler.TileImage):
 
         def notify(self, x, y):
             if self.parent.map_mouse_handler is not None:
-                lon, lat = self.parent._provider.tile_space_to_lon_lat(x, y)
+                lon, lat = self.parent._source.tile_space_to_lon_lat(x, y)
                 self.parent.map_mouse_handler.notify(lon, lat)
             super().notify(x, y)
+
+    class _Composer():
+        def __init__(self, source, parent):
+            self.parent = parent
+            self.source = source
+            self._composer = None
+            self._lock = _threading.RLock()
+
+        @property
+        def composer(self):
+            with self._lock:
+                return self._composer
+
+        @composer.setter
+        def composer(self, v):
+            with self._lock:
+                self._composer = v
+
+        def __call__(self, tx, ty):
+            tile = self.source(tx, ty)
+            comp = self.composer
+            if comp is not None:
+                tile = comp.process(tile, tx, ty)
+            return tile
 
 
 class MapMouseHandler():
@@ -94,6 +130,79 @@ class MapMouseHandler():
         location.  Will be sent as :class:`math.nan` if outside of the
         coordinate system."""
         pass
+
+
+class Composer():
+    """Interface which allows "composing" tiles before they are displayed.
+    Typically used to overlay icons etc.
+    """
+    def process(self, tile, tx, ty):
+        """Optionally overlap this tile or otherwise process it.
+        You should _not_ directly modify `tile`.
+        
+        :param tile: The input tile.
+        :param tx: The `x` location of the tile.
+        :param ty: The `y` location of the tile.
+
+        :return: A :class:`PIL.Image` instance of the same size as `tile`.
+        """
+        pass
+
+
+class DroppedPins(Composer):
+    """A composer which displays an icon over specified locations.
+    
+    :param icon: A :class:`PIL.Image` the be displayed.
+    :param centre: Where the "centre" of the icon is.
+    :param source: The :class:`WebMercatorTiles` or
+      :class:`OrdnanceSurveyTiles` instance in use.
+    """
+    def __init__(self, icon, centre, source):
+        if icon.mode != "RGBA":
+            raise ValueError("Must be an RGBA mode icon")
+        self._alpha = _Image.new("L", icon.size)
+        self._alpha.frombytes( icon.tobytes()[3::4] )
+        self._icon = icon.convert("RGB")
+        self._offset = _np.asarray(centre)
+        self._source = source
+        self.locations = []
+
+    @property
+    def locations(self):
+        """An array of locations, `(longitude, latitude)`.
+        (Internally, a `numpy` array of shape (N,2)).
+        """
+        return self._locations
+
+    @locations.setter
+    def locations(self, v):
+        self._locations = _np.asarray(v)
+        if len(self._locations) == 0:
+            return
+        if len(self._locations.shape) == 1:
+            self._locations = self._locations[None,:]
+        if self._locations.shape[1] != 2:
+            raise ValueError("Should be set with a pair of coordinates, or an array of coordinates.")
+        for i in range(self._locations.shape[0]):
+            self._locations[i] = self._source.lon_lat_to_tile_space(*self._locations[i])
+
+    def process(self, tile, tx, ty):
+        if len(self._locations) == 0:
+            return tile
+        tx, ty = tx * tile.width, ty * tile.height
+        into_tile = self._locations - _np.asarray([tx,ty])[None,:] - self._offset
+        mask = (into_tile[:,0] > - self._icon.width) & (into_tile[:,1] > - self._icon.height)
+        mask &= (into_tile[:,0] < tile.width) & (into_tile[:,1] < tile.height)
+        into_tile = into_tile[mask]
+        if into_tile.shape[0] == 0:
+            return tile
+        if tile.mode != "RGB":
+            out = tile.convert("RGB")
+        else:
+            out = tile.copy()
+        for (x,y) in into_tile:
+            out.paste(self._icon, (int(x), int(y)), self._alpha)
+        return out
 
 
 class WebMercatorTiles():

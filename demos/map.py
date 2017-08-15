@@ -45,9 +45,22 @@ tilemapbase.ordnancesurvey.TwentyFiveRaster.init(path)
 path = os.path.join("..", "..", "..", "Data", "DigiMap", "mastermap_1_to_1000_png")
 tilemapbase.ordnancesurvey.MasterMap.init(path)
 
+print("Please be aware that Internet tiles may have usage rights associated with them.")
+print("All tiles may have copyright associated with them.")
+print("Icon from http://www.flaticon.com/authors/madebyoliver CCBY 3.0")
+
 import tkinter as tk
 import tkinter.ttk as ttk
 import math
+
+# Black
+#icon = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAABGdBTUEAALGPC/xhBQAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAAAmJLR0QAAKqNIzIAAAAJcEhZcwAADdcAAA3XAUIom3gAAAAHdElNRQfhCA8RLg//g+TqAAAAxElEQVQoz3XQIU5DQRSF4Q9o0wR2QJ5G4FgBBlNdg+gKQIBBIrsDFtEgaFJH2QCGNWDIM4QGAUE8wkV00jfDK/+oOeefSe6lZWSuVpsb6TAwFdmZGpTCpKhDmOR1pRHCj4U730JoVK0wTq8uwWm6jWEbHCXxFsw0bboS3pMwBCf6bdoDz0m4cexj9XWWYs9bZ4pXu/kc1x3hqtxD31NRP9r5u8tDX+v604ENXKyFMxvZ8iCEe/9SWVraz6NeIbw4F+o8+gU+mFx4n0ucRwAAACV0RVh0ZGF0ZTpjcmVhdGUAMjAxNy0wOC0xNVQxNzo0NjoxNSswMjowMILeaQYAAAAldEVYdGRhdGU6bW9kaWZ5ADIwMTctMDgtMTVUMTc6NDY6MTUrMDI6MDDzg9G6AAAAGXRFWHRTb2Z0d2FyZQB3d3cuaW5rc2NhcGUub3Jnm+48GgAAAABJRU5ErkJggg=='
+# Blue
+icon = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAABGdBTUEAALGPC/xhBQAAACBjSFJNAAB6JgAAgIQAAPoAAACA6AAAdTAAAOpgAAA6mAAAF3CculE8AAAAjVBMVEUAAAAAbPAAbfEAbe8Abf8AbfAAbfAAbe0AbfAAbfAAbvAAbPAAbfAAbPEAbe8AbvEAbfEAbOsAbfAAbPEAbPAAbfEAbfAAbe8AbfAAbfAAdOgAbfAAbfAAZuYAbfAAZv8AbfAAbPAAVf8AbfMAbfAAa/IAbO8AbPEAAP8AbfAAbfAAbfAAbfEAbfAAAABh9UrBAAAALXRSTlMAU7LmB6iFHPv+uq78XHBYjRr6fWNL96KW8gvt6wp1Bc3IAyr1Jm9qAbu57lmd5TiKAAAAAWJLR0QAiAUdSAAAAAlwSFlzAAAN1wAADdcBQiibeAAAAAd0SU1FB+EIDxUmDd5dpxIAAACHSURBVBjTVY7ZFoIwEEPDWlwQEMVd3DfM//+e09JWzctMbk+mAbSCMIrCAE5xQqMktiClVdp7lZGD4WhMZsqAXN4mQCEjN6CUrZJLU7I0oBYwA+Yyah9pFsuVj6w37pftDj5jtLc92kPvjydX9dxof7n67rhpcP96PJ7kC79SXVf9AbwLu3wAtlYRoQxIOPcAAAAldEVYdGRhdGU6Y3JlYXRlADIwMTctMDgtMTVUMjE6Mzg6MTMrMDI6MDAKeIMKAAAAJXRFWHRkYXRlOm1vZGlmeQAyMDE3LTA4LTE1VDIxOjM4OjEzKzAyOjAweyU7tgAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoAAAAASUVORK5CYII='
+import PIL.Image
+import io, base64
+icon = base64.b64decode(icon)
+icon = PIL.Image.open(io.BytesIO(icon)).convert("RGBA")
 
 class App(tk.Tk):
     def __init__(self):
@@ -78,9 +91,14 @@ class App(tk.Tk):
         self._del_children(self._control_frame)
         frame = ttk.Frame(self._control_frame)
         frame.grid(row=0, column=0)
-        self._web_sources = {0 : tilemapbase.tiles.OSM}
+        self._web_sources = {0 : tilemapbase.tiles.OSM,
+            1 : tilemapbase.tiles.Carto_Light,
+            2 : tilemapbase.tiles.Carto_Dark,
+            3 : tilemapbase.tiles.Stamen_Toner,
+            4 : tilemapbase.tiles.Stamen_Watercolour
+            }
         self._web_choice = tk.IntVar()
-        for col, name in enumerate(["Open Street Map"]):
+        for col, name in enumerate(["Open Street Map", "Carto Light", "Carto Dark", "Stamen Toner", "Stamen Watercolour"]):
             ttk.Radiobutton(frame, text=name, value=col, variable=self._web_choice, command=self._web_new_choice).grid(row=0, column=col)
         
         frame = ttk.Frame(self._control_frame)
@@ -186,6 +204,9 @@ class App(tk.Tk):
         self._map_image.map_mouse_handler = mouse_handler
         self._map_image.mouse_handler = tilewindow.image.MouseCursorHandler(self._map_image, None)
         self._map_image["cursor"] = "crosshair"
+        comp = tilemap.DroppedPins(icon, (8,15), source)
+        comp.locations = [-1.554960, 53.804350]
+        self._map_image.set_composer(comp)
         self.after(100, lambda : self._map_image.move_map_view_to_centre(*self._location))
 
     def _default_start_point(self):
