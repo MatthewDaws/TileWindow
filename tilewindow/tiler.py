@@ -11,6 +11,7 @@ import time as _time
 import queue
 import PIL.Image
 from . import image
+import logging as _logging
 
 class TileWindow():
     """Internal class which stores details of a large or infinite image:
@@ -18,7 +19,8 @@ class TileWindow():
       - :attr:`image_bounds` which is the size of the total image.
       - :attr:`window` the currently viewed rectangle of the total image.
       - :attr:`buffer_extent` the rectangle of the total image which we have
-        stored in memory.  Will always exactly align with tile width / height.
+        stored in memory.  Will always exactly align with tile width / height,
+        and should contain the "window" (but may not during the update cycle).
       - :attr:`border` the number of tiles in a border we aim to keep around
         the "window" in the "buffer".
 
@@ -177,6 +179,10 @@ class Tiler(TileWindow):
 
     The invariant we maintain is that the `PIL.Image` is always the same as
     the "buffer", and is displayed at (0,0) on the actual `tk.Canvas`.
+
+    Scrolling is achieved by varying the display of the `tk.Canvas` (to give
+    small movements quickly) using the :class:`image.Image`, and also moving
+    the buffer (to achieve larger movements).
     """
     def __init__(self, tilewidth, tileheight=None, **kwargs):
         if tileheight is None:
@@ -188,13 +194,6 @@ class Tiler(TileWindow):
         self.buffer_extent = (0,0,0,0)
         self._marsher = _TileJobMarsher()
         self._redrawer = None
-        self._offset = (0,0)
-
-    @property
-    def offset(self):
-        """The coordinates of the total image where we currently consider
-        the buffer_extent as starting at."""
-        return self._offset
         
     def update(self, location, size):
         """To be called with the values of `current_location` and `size` from
@@ -202,9 +201,12 @@ class Tiler(TileWindow):
 
         :param location: `(left, top)` of the currently viewed image.
         :param size: `(width, height)` of the currently viewed image.
+          Maybe `None` to indicate no update
         """
         x = self.buffer_extent[0] + location[0]
         y = self.buffer_extent[1] + location[1]
+        if size is None:
+            size = (self.window[2] - self.window[0], self.window[3] - self.window[1])
         self.window = (x, y, x + size[0], y + size[1])
         self._update()
 
@@ -216,8 +218,10 @@ class Tiler(TileWindow):
         need_tile_space = (need[0] // self.tile_width, need[1] // self.tile_height,
             need[2] // self.tile_width, need[3] // self.tile_height)
 
-        need_width = need[2] - need[0]
-        need_height = need[3] - need[1]
+        # If we don't have an infinite window, these can become negative if the view
+        # is scrolled too far.
+        need_width = max(0, need[2] - need[0])
+        need_height = max(0, need[3] - need[1])
         new_image = PIL.Image.new("RGB", (need_width, need_height))
         
         tiles_needed = []
@@ -254,7 +258,7 @@ class Tiler(TileWindow):
     def new_tile(self, tx, ty, tile):
         """Send a new tile at position `(tx, ty)`."""
         if tile is None:
-            raise ValueError()
+            return
         new_image = None
         with self._lock:
             self._tiles[(tx, ty)] = tile
@@ -334,7 +338,8 @@ class _TileJobMarsher():
 
 
 class TileProvider():
-    """The interface for providing a tile.  Will be run in a different thread.
+    """The interface for providing a tile.  Will be run in a different thread,
+    and so should not interact with the `tkinter` code.
     """
     def __call__(self, tx, ty):
         raise NotImplementedError()
@@ -357,12 +362,16 @@ class TileImage(image.Image):
         self._tiler.redrawer = self.Redrawer(self)
         self._pooler = self.Pooler(self)
         self._done = False
-        self._image_sequence = 0
         self._lock = _threading.RLock()
         self._waiting_image = None
         self._pooler.start()
         self._tiler.update((0,0),(100,100))
         self.after(100, self._update)
+
+    @property
+    def tiler(self):
+        """The :class:`Tiler` which is controlling tile creation."""
+        return self._tiler
 
     def notify_of_gap(self, left, top, right, bottom):
         """Handles messages from the super class indicating the user has
@@ -373,6 +382,26 @@ class TileImage(image.Image):
         self._done = True
         self._pooler.cancel()
         super().destroy()
+
+    def move_tile_view_to(self, x, y):
+        """Move the display so that the tile view has `(x,y)` in the upper
+        left corner."""
+        buffer_extent = self._tiler.buffer_extent
+        buffer_width = buffer_extent[2] - buffer_extent[0]
+        buffer_height = buffer_extent[3] - buffer_extent[1]
+        xx = _math.floor(x / self._tiler.tile_width) * self._tiler.tile_width
+        yy = _math.floor(y / self._tiler.tile_height) * self._tiler.tile_height
+        self._tiler.buffer_extent = (xx, yy, xx + buffer_width, yy + buffer_height)
+        self._tiler.update((x - xx,y - yy), None)
+
+    @property
+    def tile_window(self):
+        """The current view in "tile space".  Querying :attr:`current_location`
+        does not work, but this does, as it takes account of tile scrolling.
+
+        :return: `(xmin, ymin, xmax, ymax)`
+        """
+        return self._tiler.window
 
     def _update(self):
         with self._lock:
@@ -394,7 +423,6 @@ class TileImage(image.Image):
     def set_image(self, image, location):
         with self._lock:
             self._waiting_image = None
-        super().mouse_handler.set_location(location)
         super().set_image(image, location=location)
 
     @property
@@ -404,13 +432,14 @@ class TileImage(image.Image):
 
     @mouse_handler.setter
     def mouse_handler(self, v):
-        self._tracker.mouse_handler = self.MouseHandler(self,v)
+        image.Image.mouse_handler.fset(self, self.MouseHandler(self,v))
 
     class Pooler(_threading.Thread):
         def __init__(self, parent):
             super().__init__(daemon=True)
             self._parent = parent
             self._cancel = False
+            self._logger = _logging.getLogger(__name__)
 
         def cancel(self):
             self._cancel = True
@@ -423,6 +452,8 @@ class TileImage(image.Image):
                     self._parent._tiler.new_tile(tx, ty, tile)
                 except queue.Empty:
                     pass
+                except:
+                    self._logger.exception("From tile provider...")
 
     class Redrawer(Tiler.Redrawer):
         def __init__(self, parent):
@@ -450,7 +481,3 @@ class TileImage(image.Image):
                 xx = x + self.parent._tiler.buffer_extent[0]
                 yy = y + self.parent._tiler.buffer_extent[1]
                 return self.delegate.notify(xx, yy)
-
-        def set_location(self, location):
-            if location is not None:
-                self.offset = location

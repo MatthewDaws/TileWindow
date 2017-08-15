@@ -401,7 +401,27 @@ class MouseHandler():
         pass
 
 
-class MouseCursorHandler(MouseHandler):
+class MouseHandlerChain(MouseHandler):
+    """A version :class:`MouseHandler` which has a "delegate" and by defaults
+    forwards to that delegate.  A useful to subclass to generate a "chain" of
+    notifications.
+
+    :param delegate: The next instance of :class:`MouseHandler` to call.
+    """
+    def __init__(self, delegate=None):
+        self._delegate = delegate
+
+    def handle(self, event, what):
+        if self._delegate is not None:
+            return self._delegate.handle(event, what)
+        return False
+
+    def notify(self, x, y):
+        if self._delegate is not None:
+            return self._delegate.notify(x, y)
+
+
+class MouseCursorHandler(MouseHandlerChain):
     """Change the cursor when the user drags.
     
     :param canvas: The :class:`Image` instance (or other `tkinter` widget) to
@@ -410,10 +430,10 @@ class MouseCursorHandler(MouseHandler):
     :param cursor: The string name of the `tkinter` cursor.
     """
     def __init__(self, canvas, delegate=None, cursor="hand2"):
+        super().__init__(delegate)
         self._canvas = canvas
         self._old = ""
         self._cursor = cursor
-        self._delegate = delegate
 
     def handle(self, event, what):
         if what == "down":
@@ -421,10 +441,7 @@ class MouseCursorHandler(MouseHandler):
             self._canvas["cursor"] = self._cursor
         elif what == "up":
             self._canvas["cursor"] = self._old
-        if self._delegate is not None:
-            return self._delegate.handle(event, what)
-        return False
+        return super().handle(event, what)
 
     def notify(self, x, y):
-        if self._delegate is not None:
-            return self._delegate.notify(x, y)
+        super().notify(x, y)
